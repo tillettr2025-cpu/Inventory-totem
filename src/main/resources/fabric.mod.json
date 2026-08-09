@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "auto_totem",
+  "version": "1.0.0",
+  "name": "Inventory Auto Totem",
+  "description": "Automatically refills the offhand with a Totem of Undying and keeps a configurable backup Totem in the hotbar.",
+  "authors": [
+    "Ryxn"
+  ],
+  "license": "MIT",
+  "environment": "client",
+
+  "entrypoints": {
+    "client": [
+      "com.ryxn.autototem.AutoTotemClient"
+    ],
+    "modmenu": [
+      "com.ryxn.autototem.AutoTotemModMenu"
+    ]
+  },
+
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "1.21.8",
+    "fabric-api": "*",
+    "modmenu": ">=15.0.0"
+  }
+}
