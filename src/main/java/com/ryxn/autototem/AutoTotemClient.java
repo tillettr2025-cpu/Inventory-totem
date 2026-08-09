@@ -3,15 +3,22 @@ package com.ryxn.autototem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.Items;
+import net.minecraft.screen.slot.SlotActionType;
 
 public class AutoTotemClient implements ClientModInitializer {
 
     public static AutoTotemConfig CONFIG;
 
+    private static boolean movingItems = false;
+    private static int actionDelay = 0;
+    private static boolean openedInventory = false;
+
     @Override
     public void onInitializeClient() {
+
         CONFIG = AutoTotemConfig.load();
 
         ClientTickEvents.END_CLIENT_TICK.register(
@@ -20,47 +27,193 @@ public class AutoTotemClient implements ClientModInitializer {
     }
 
     private static void tick(MinecraftClient client) {
-        if (!CONFIG.enabled || client.player == null) {
+
+        if (client.player == null || client.world == null) {
+            return;
+        }
+
+        if (!CONFIG.enabled) {
             return;
         }
 
         ClientPlayerEntity player = client.player;
 
-        // Keep the offhand supplied with a Totem.
-        if (player.getOffHandStack().isEmpty()) {
-            int totemSlot = findTotem(player);
-
-            if (totemSlot >= 0) {
-                moveToOffhand(client, totemSlot);
-            }
+        if (actionDelay > 0) {
+            actionDelay--;
+            return;
         }
 
-        // Keep a backup Totem in the configured hotbar slot.
-        if (CONFIG.backupSlot >= 0 && CONFIG.backupSlot < 9) {
-            ensureBackupTotem(client, CONFIG.backupSlot);
+        /*
+         * Don't interfere with another container,
+         * chest, crafting table, etc.
+         */
+        if (client.currentScreen != null
+                && !(client.currentScreen instanceof InventoryScreen)) {
+
+            return;
+        }
+
+        /*
+         * Nothing to do if the offhand already
+         * contains a Totem.
+         */
+        boolean offhandHasTotem =
+                player.getOffHandStack()
+                        .isOf(Items.TOTEM_OF_UNDYING);
+
+        boolean backupHasTotem =
+                CONFIG.backupSlot >= 0
+                        && CONFIG.backupSlot < 9
+                        && player.getInventory()
+                        .getStack(CONFIG.backupSlot)
+                        .isOf(Items.TOTEM_OF_UNDYING);
+
+        /*
+         * Everything is already ready.
+         */
+        if (offhandHasTotem && backupHasTotem) {
+            movingItems = false;
+            openedInventory = false;
+            return;
+        }
+
+        /*
+         * Find a Totem somewhere in the inventory.
+         */
+        int source = findTotem(player);
+
+        if (source < 0) {
+            movingItems = false;
+            return;
+        }
+
+        /*
+         * Open the player's inventory visibly.
+         */
+        if (!(client.currentScreen instanceof InventoryScreen)) {
+
+            client.setScreen(
+                    new InventoryScreen(player)
+            );
+
+            movingItems = true;
+            openedInventory = true;
+
+            /*
+             * Give the screen one tick to initialize.
+             */
+            actionDelay = 2;
+
+            return;
+        }
+
+        /*
+         * Inventory is now open.
+         */
+        if (movingItems) {
+
+            if (!offhandHasTotem) {
+
+                moveToOffhand(
+                        client,
+                        source
+                );
+
+                actionDelay = 2;
+                return;
+            }
+
+            /*
+             * Re-check because moving the first
+             * Totem may have changed the inventory.
+             */
+            source = findTotemForBackup(player);
+
+            if (source >= 0
+                    && !backupHasTotem) {
+
+                moveToBackupSlot(
+                        client,
+                        source,
+                        CONFIG.backupSlot
+                );
+
+                actionDelay = 3;
+                return;
+            }
+
+            /*
+             * Finished.
+             */
+            movingItems = false;
+
+            /*
+             * Close the visible inventory.
+             */
+            if (openedInventory
+                    && client.currentScreen
+                    instanceof InventoryScreen) {
+
+                client.setScreen(null);
+            }
+
+            openedInventory = false;
         }
     }
 
-    private static int findTotem(ClientPlayerEntity player) {
+    /*
+     * Find any Totem in the player's inventory.
+     */
+    private static int findTotem(
+            ClientPlayerEntity player
+    ) {
 
-        // Prefer the configured backup slot.
-        int preferred = CONFIG.backupSlot;
+        /*
+         * First search the hotbar.
+         */
+        for (int slot = 0; slot < 9; slot++) {
 
-        if (preferred >= 0 && preferred < 9) {
             if (player.getInventory()
-                    .getStack(preferred)
+                    .getStack(slot)
                     .isOf(Items.TOTEM_OF_UNDYING)) {
 
-                return preferred;
+                return slot;
             }
         }
 
-        // Search the rest of the inventory.
-        for (int slot = 0;
-             slot < player.getInventory().size();
+        /*
+         * Then search the main inventory.
+         */
+        for (int slot = 9;
+             slot < 36;
              slot++) {
 
-            if (slot == preferred) {
+            if (player.getInventory()
+                    .getStack(slot)
+                    .isOf(Items.TOTEM_OF_UNDYING)) {
+
+                return slot;
+            }
+        }
+
+        return -1;
+    }
+
+    /*
+     * Find a Totem for the backup slot.
+     */
+    private static int findTotemForBackup(
+            ClientPlayerEntity player
+    ) {
+
+        int backup =
+                CONFIG.backupSlot;
+
+        for (int slot = 0;
+             slot < 36;
+             slot++) {
+
+            if (slot == backup) {
                 continue;
             }
 
@@ -75,111 +228,173 @@ public class AutoTotemClient implements ClientModInitializer {
         return -1;
     }
 
+    /*
+     * Move a Totem from an inventory slot
+     * into the offhand.
+     *
+     * Player inventory handler slot IDs:
+     *
+     * Hotbar:
+     * 36-44
+     *
+     * Main inventory:
+     * 9-35
+     *
+     * Offhand:
+     * 45
+     */
     private static void moveToOffhand(
             MinecraftClient client,
-            int slot
+            int inventorySlot
     ) {
 
-        if (client.interactionManager == null
-                || client.player == null) {
+        if (client.player == null
+                || client.interactionManager == null) {
+
             return;
         }
 
-        /*
-         * Inventory slot IDs:
-         *
-         * 0-8   = hotbar
-         * 9-35  = main inventory
-         * 40    = offhand
-         *
-         * Swap the selected inventory slot
-         * with the offhand slot.
-         */
+        int sourceId =
+                inventorySlotId(inventorySlot);
 
+        int offhandId = 45;
+
+        int syncId =
+                client.player
+                        .currentScreenHandler
+                        .syncId;
+
+        /*
+         * Pick up the Totem.
+         */
         client.interactionManager.clickSlot(
-                client.player.currentScreenHandler.syncId,
-                inventorySlotId(slot),
-                40,
-                net.minecraft.screen.slot.SlotActionType.SWAP,
+                syncId,
+                sourceId,
+                0,
+                SlotActionType.PICKUP,
+                client.player
+        );
+
+        /*
+         * Place it into offhand.
+         */
+        client.interactionManager.clickSlot(
+                syncId,
+                offhandId,
+                0,
+                SlotActionType.PICKUP,
                 client.player
         );
     }
 
-    private static void ensureBackupTotem(
+    /*
+     * Move/swap a Totem into the configured
+     * hotbar slot.
+     */
+    private static void moveToBackupSlot(
             MinecraftClient client,
+            int source,
             int backupSlot
     ) {
 
-        ClientPlayerEntity player = client.player;
-
-        if (player == null) {
-            return;
-        }
-
-        if (player.getInventory()
-                .getStack(backupSlot)
-                .isOf(Items.TOTEM_OF_UNDYING)) {
+        if (client.player == null
+                || client.interactionManager == null) {
 
             return;
         }
 
-        int source = findInventoryTotem(
-                player,
-                backupSlot
-        );
+        if (backupSlot < 0
+                || backupSlot > 8) {
 
-        if (source < 0) {
             return;
         }
 
-        if (client.interactionManager == null) {
-            return;
-        }
+        int sourceId =
+                inventorySlotId(source);
 
-        client.interactionManager.clickSlot(
-                player.currentScreenHandler.syncId,
-                inventorySlotId(source),
-                inventorySlotId(backupSlot),
-                net.minecraft.screen.slot.SlotActionType.SWAP,
-                player
-        );
-    }
+        int destinationId =
+                inventorySlotId(backupSlot);
 
-    private static int findInventoryTotem(
-            ClientPlayerEntity player,
-            int ignoredSlot
-    ) {
-
-        for (int slot = 0;
-             slot < player.getInventory().size();
-             slot++) {
-
-            if (slot == ignoredSlot) {
-                continue;
-            }
-
-            if (player.getInventory()
-                    .getStack(slot)
-                    .isOf(Items.TOTEM_OF_UNDYING)) {
-
-                return slot;
-            }
-        }
-
-        return -1;
-    }
-
-    private static int inventorySlotId(int inventorySlot) {
+        int syncId =
+                client.player
+                        .currentScreenHandler
+                        .syncId;
 
         /*
-         * Player inventory:
+         * If destination is empty, two clicks
+         * are enough.
          *
-         * 0-8  -> hotbar
-         * 9-35 -> main inventory
+         * If it contains another item, the
+         * third click puts that item back.
          */
+        boolean destinationEmpty =
+                client.player
+                        .getInventory()
+                        .getStack(backupSlot)
+                        .isEmpty();
 
-        return inventorySlot < 9
-                ? 36 + inventorySlot
-                : inventorySlot;
+        /*
+         * Pick up the Totem.
+         */
+        client.interactionManager.clickSlot(
+                syncId,
+                sourceId,
+                0,
+                SlotActionType.PICKUP,
+                client.player
+        );
+
+        /*
+         * Put the Totem into the backup slot.
+         */
+        client.interactionManager.clickSlot(
+                syncId,
+                destinationId,
+                0,
+                SlotActionType.PICKUP,
+                client.player
+        );
+
+        /*
+         * If the backup slot contained another
+         * item, the cursor now contains it.
+         *
+         * Put that item back into the source slot.
+         */
+        if (!destinationEmpty) {
+
+            client.interactionManager.clickSlot(
+                    syncId,
+                    sourceId,
+                    0,
+                    SlotActionType.PICKUP,
+                    client.player
+            );
+        }
     }
-          }
+
+    /*
+     * Convert player's inventory index into
+     * PlayerScreenHandler slot ID.
+     */
+    private static int inventorySlotId(
+            int inventorySlot
+    ) {
+
+        /*
+         * Hotbar inventory 0-8 maps to
+         * handler slots 36-44.
+         */
+        if (inventorySlot >= 0
+                && inventorySlot < 9) {
+
+            return 36 + inventorySlot;
+        }
+
+        /*
+         * Main inventory 9-35 uses
+         * the same handler IDs.
+         */
+        return inventorySlot;
+    }
+}
